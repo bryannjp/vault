@@ -8,7 +8,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-
 contract SimpleVault is ERC20, IERC4626 {
     IERC20 private immutable i_asset;
     uint8 private immutable i_underlyingDecimals;
@@ -18,8 +17,8 @@ contract SimpleVault is ERC20, IERC4626 {
     error Vault__ExceededMaxMint(address receiver, uint256 shares, uint256 maxMint);
     error Vault__ExceededMaxWithdraw(address owner, uint256 assets, uint256 maxWithdraw);
     error Vault__ExceededMaxRedeem(address owner, uint256 shares, uint256 maxRedeem);
-    
-    constructor (IERC20 asset_, string memory name, string memory symbol) ERC20(name, symbol) {
+
+    constructor(IERC20 asset_, string memory name, string memory symbol) ERC20(name, symbol) {
         if (address(asset_) == address(0)) revert ZeroAddress();
         i_asset = asset_;
         (bool success, uint8 assetDecimals) = SafeERC20.tryGetDecimals(asset_);
@@ -33,6 +32,7 @@ contract SimpleVault is ERC20, IERC4626 {
     function asset() external view returns (address assetTokenAddress) {
         return address(i_asset);
     }
+
     function totalAssets() public view returns (uint256 totalManagedAssets) {
         return i_asset.balanceOf(address(this));
     }
@@ -68,12 +68,24 @@ contract SimpleVault is ERC20, IERC4626 {
     function previewRedeem(uint256 shares) public view returns (uint256 assets) {
         return _toAssets(shares, Math.Rounding.Floor);
     }
-    
-    function maxDeposit(address /* receiver */) public pure returns (uint256 maxAssets) {
+
+    function maxDeposit(
+        address /* receiver */
+    )
+        public
+        pure
+        returns (uint256 maxAssets)
+    {
         return type(uint256).max;
     }
 
-    function maxMint(address /* receiver */) public pure returns (uint256 maxShares) {
+    function maxMint(
+        address /* receiver */
+    )
+        public
+        pure
+        returns (uint256 maxShares)
+    {
         return type(uint256).max;
     }
 
@@ -122,8 +134,7 @@ contract SimpleVault is ERC20, IERC4626 {
         SafeERC20.safeTransfer(i_asset, receiver, assets);
         emit Withdraw(msg.sender, receiver, owner, assets, shares);
     }
-    
-    
+
     function _toShares(uint256 assets, Math.Rounding rounding) private view returns (uint256) {
         return Math.mulDiv(assets, totalSupply() + 1, totalAssets() + 1, rounding);
     }
