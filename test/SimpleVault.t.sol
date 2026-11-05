@@ -34,7 +34,7 @@ contract SimpleVaultTest is Test {
 
     function setUp() public {
         usdc = new MockERC20(6);
-        vault = new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC");
+        vault = new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC", address(this), type(uint256).max);
         address[4] memory users = [alice, bob, carol, early];
         for (uint256 i = 0; i < users.length; i++) {
             usdc.mint(users[i], START);
@@ -78,27 +78,29 @@ contract SimpleVaultTest is Test {
 
     function test_RevertWhen_AssetIsTheZeroAddress() public {
         vm.expectRevert(SimpleVault.ZeroAddress.selector);
-        new SimpleVault(IERC20(address(0)), "V", "V");
+        new SimpleVault(IERC20(address(0)), "V", "V", address(this), type(uint256).max);
     }
 
     function testFuzz_Decimals_FollowTheAsset(uint8 assetDecimals) public {
         MockERC20 token = new MockERC20(assetDecimals);
-        SimpleVault v = new SimpleVault(IERC20(address(token)), "V", "V");
+        SimpleVault v = new SimpleVault(IERC20(address(token)), "V", "V", address(this), type(uint256).max);
         assertEq(v.decimals(), assetDecimals);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetHasNoCode() public {
-        SimpleVault v = new SimpleVault(IERC20(makeAddr("not a contract")), "V", "V");
+        SimpleVault v = new SimpleVault(IERC20(makeAddr("not a contract")), "V", "V", address(this), type(uint256).max);
         assertEq(v.decimals(), 18);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetHasNoDecimalsFunction() public {
-        SimpleVault v = new SimpleVault(IERC20(address(new NoDecimalsToken())), "V", "V");
+        SimpleVault v =
+            new SimpleVault(IERC20(address(new NoDecimalsToken())), "V", "V", address(this), type(uint256).max);
         assertEq(v.decimals(), 18);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetsDecimalsDoNotFitInUint8() public {
-        SimpleVault v = new SimpleVault(IERC20(address(new HugeDecimalsToken())), "V", "V");
+        SimpleVault v =
+            new SimpleVault(IERC20(address(new HugeDecimalsToken())), "V", "V", address(this), type(uint256).max);
         assertEq(v.decimals(), 18);
     }
 
@@ -536,7 +538,7 @@ contract SimpleVaultTest is Test {
 
     function test_Order_AssetsArePulledInBeforeSharesAreMinted() public {
         SnoopingToken snoop = new SnoopingToken();
-        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V");
+        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max);
         snoop.setVault(address(v));
         snoop.mint(alice, 1_000);
         vm.startPrank(alice);
@@ -548,7 +550,7 @@ contract SimpleVaultTest is Test {
 
     function test_Order_SharesAreBurnedBeforeAssetsArePaidOut() public {
         SnoopingToken snoop = new SnoopingToken();
-        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V");
+        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max);
         snoop.setVault(address(v));
         snoop.mint(alice, 1_000);
         vm.startPrank(alice);

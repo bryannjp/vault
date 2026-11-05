@@ -16,18 +16,45 @@ contract VaultHandler is Test {
     uint256 public ghostOut; // assets users took out
     uint256 public ghostDonated; // yield sent straight to the vault
     bool public ghostPaidOutMoreThanQuoted; // a withdraw/redeem gave more than its preview promised
+    bool public ghostMovedWhilePaused; // a deposit/mint/withdraw/redeem succeeded while paused
+    bool public ghostDepositBrokeTheCap; // a deposit/mint pushed assets above both the cap and where they were
+    address internal owner;
 
-    constructor(SimpleVault vault_, MockERC20 usdc_, address[] memory actors_) {
+    constructor(SimpleVault vault_, MockERC20 usdc_, address[] memory actors_, address owner_) {
+        owner = owner_;
         vault = vault_;
         usdc = usdc_;
         actors = actors_;
+    }
+
+    /// Records anything a successful action did that it must never do.
+    modifier watch(bool isDeposit) {
+        bool wasPaused = vault.paused();
+        uint256 before = vault.totalAssets();
+        uint256 cap = vault.depositCap();
+        _;
+        if (wasPaused) ghostMovedWhilePaused = true;
+        if (isDeposit && vault.totalAssets() > (cap > before ? cap : before)) ghostDepositBrokeTheCap = true;
+    }
+
+    function setCap(uint256 cap, bool unlimited) external {
+        cap = unlimited ? type(uint256).max : bound(cap, 0, 4e15);
+        vm.prank(owner);
+        vault.setDepositCap(cap);
+    }
+
+    function togglePause(uint256 seed) external {
+        if (seed % 4 != 0) return; // pause only now and then, so most sequences keep running
+        vm.prank(owner);
+        if (vault.paused()) vault.unpause();
+        else vault.pause();
     }
 
     function _actor(uint256 seed) internal view returns (address) {
         return actors[seed % actors.length];
     }
 
-    function deposit(uint256 seed, uint256 assets) external {
+    function deposit(uint256 seed, uint256 assets) external watch(true) {
         address who = _actor(seed);
         assets = bound(assets, 0, usdc.balanceOf(who));
         vm.prank(who);
@@ -35,7 +62,7 @@ contract VaultHandler is Test {
         ghostIn += assets;
     }
 
-    function mint(uint256 seed, uint256 shares) external {
+    function mint(uint256 seed, uint256 shares) external watch(true) {
         address who = _actor(seed);
         shares = bound(shares, 0, 1e15);
         if (vault.previewMint(shares) > usdc.balanceOf(who)) return;
@@ -43,7 +70,7 @@ contract VaultHandler is Test {
         ghostIn += vault.mint(shares, who);
     }
 
-    function withdraw(uint256 seed, uint256 receiverSeed, uint256 assets, bool viaOperator) external {
+    function withdraw(uint256 seed, uint256 receiverSeed, uint256 assets, bool viaOperator) external watch(false) {
         address owner = _actor(seed);
         address caller = viaOperator ? _actor(seed + 1) : owner;
         assets = bound(assets, 0, vault.maxWithdraw(owner));
@@ -60,7 +87,7 @@ contract VaultHandler is Test {
         ghostOut += assets;
     }
 
-    function redeem(uint256 seed, uint256 receiverSeed, uint256 shares, bool viaOperator) external {
+    function redeem(uint256 seed, uint256 receiverSeed, uint256 shares, bool viaOperator) external watch(false) {
         address owner = _actor(seed);
         address caller = viaOperator ? _actor(seed + 1) : owner;
         shares = bound(shares, 0, vault.maxRedeem(owner));
@@ -97,9 +124,11 @@ contract SimpleVaultInvariantTest is Test {
     VaultHandler internal handler;
     address[] internal actors;
 
+    address internal owner = makeAddr("owner");
+
     function setUp() public {
         usdc = new MockERC20(6);
-        vault = new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC");
+        vault = new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC", owner, 2e15);
         for (uint256 i = 0; i < 4; i++) {
             address a = makeAddr(string.concat("actor", vm.toString(i)));
             actors.push(a);
@@ -107,7 +136,7 @@ contract SimpleVaultInvariantTest is Test {
             vm.prank(a);
             usdc.approve(address(vault), type(uint256).max);
         }
-        handler = new VaultHandler(vault, usdc, actors);
+        handler = new VaultHandler(vault, usdc, actors, owner);
         targetContract(address(handler));
     }
 
@@ -141,5 +170,13 @@ contract SimpleVaultInvariantTest is Test {
 
     function invariant_NoPayoutExceedsItsQuote() public view {
         assertFalse(handler.ghostPaidOutMoreThanQuoted());
+    }
+
+    function invariant_NothingMovesWhilePaused() public view {
+        assertFalse(handler.ghostMovedWhilePaused());
+    }
+
+    function invariant_DepositsNeverBreakTheCap() public view {
+        assertFalse(handler.ghostDepositBrokeTheCap());
     }
 }
