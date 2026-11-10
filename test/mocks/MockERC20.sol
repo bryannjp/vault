@@ -36,6 +36,7 @@ contract SnoopingToken is ERC20 {
     address public vault;
     uint256 public supplyWhenPulledIn = type(uint256).max;
     uint256 public supplyWhenPaidOut = type(uint256).max;
+    uint256 public pendingWhenPaidOut = type(uint256).max;
 
     constructor() ERC20("Snoop", "SNP") {}
 
@@ -51,6 +52,10 @@ contract SnoopingToken is ERC20 {
         super._update(from, to, value);
         if (vault == address(0) || from == address(0)) return;
         if (to == vault) supplyWhenPulledIn = ERC20(vault).totalSupply();
-        if (from == vault) supplyWhenPaidOut = ERC20(vault).totalSupply();
+        if (from == vault) {
+            supplyWhenPaidOut = ERC20(vault).totalSupply();
+            (bool ok, bytes memory data) = vault.staticcall(abi.encodeWithSignature("totalPending()"));
+            if (ok && data.length == 32) pendingWhenPaidOut = abi.decode(data, (uint256));
+        }
     }
 }
