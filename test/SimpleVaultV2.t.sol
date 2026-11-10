@@ -20,7 +20,7 @@ contract SimpleVaultV2Test is Test {
 
     function setUp() public {
         usdc = new MockERC20(6);
-        vault = new SimpleVault(IERC20(address(usdc)), "V", "V", owner, CAP);
+        vault = new SimpleVault(IERC20(address(usdc)), "V", "V", owner, CAP, 0);
         for (uint256 i; i < 2; i++) {
             address u = i == 0 ? alice : bob;
             usdc.mint(u, 1e30);
@@ -37,14 +37,14 @@ contract SimpleVaultV2Test is Test {
     function test_Constructor_SetsOwnerAndCap_AndEmits() public {
         vm.expectEmit(false, false, false, true);
         emit DepositCapChanged(0, 123);
-        SimpleVault v = new SimpleVault(IERC20(address(usdc)), "V", "V", owner, 123);
+        SimpleVault v = new SimpleVault(IERC20(address(usdc)), "V", "V", owner, 123, 0);
         assertEq(v.owner(), owner);
         assertEq(v.depositCap(), 123);
     }
 
     function test_RevertWhen_OwnerIsZero() public {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new SimpleVault(IERC20(address(usdc)), "V", "V", address(0), CAP);
+        new SimpleVault(IERC20(address(usdc)), "V", "V", address(0), CAP, 0);
     }
 
     function test_Cap_RoomShrinksAsAssetsGrow() public {
@@ -91,7 +91,7 @@ contract SimpleVaultV2Test is Test {
         assertEq(vault.maxDeposit(alice), 0);
         assertEq(vault.maxMint(alice), 0);
         vm.prank(alice);
-        vault.redeem(1_000, alice, alice); // exits still work
+        vault.requestRedeem(1_000); // exits still work
     }
 
     function test_Cap_Unlimited_ReturnsUintMax() public {
@@ -149,7 +149,7 @@ contract SimpleVaultV2Test is Test {
         vault.unpause();
     }
 
-    function test_Pause_StopsAllFour_EvenZeroAmounts_AndMaxIsZero() public {
+    function test_Pause_StopsEntryAndExit_EvenZeroAmounts_AndMaxIsZero() public {
         vm.prank(alice);
         vault.deposit(1_000, alice);
         vm.prank(alice);
@@ -169,19 +169,16 @@ contract SimpleVaultV2Test is Test {
         vm.expectRevert(Pausable.EnforcedPause.selector);
         vault.mint(1, alice);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        vault.withdraw(1, alice, alice);
-        vm.expectRevert(Pausable.EnforcedPause.selector);
-        vault.redeem(1, alice, alice);
+        vault.requestRedeem(100);
         vault.transfer(bob, 10); // shares stay transferable
         vm.stopPrank();
-        vm.prank(bob);
-        vm.expectRevert(Pausable.EnforcedPause.selector);
-        vault.redeem(1, bob, alice);
 
         vm.prank(owner);
         vault.unpause();
-        vm.prank(alice);
-        vault.redeem(100, alice, alice);
+        vm.startPrank(alice);
+        uint256 assets = vault.requestRedeem(100);
+        vault.claim(assets, alice);
+        vm.stopPrank();
     }
 
     function test_Pause_Twice_And_UnpauseWhenRunning_Revert() public {

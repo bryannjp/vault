@@ -28,13 +28,11 @@ contract SimpleVaultTest is Test {
 
     // declared locally so a wrong `indexed` or argument order in the contract is caught
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
-    event Withdraw(
-        address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
-    );
 
     function setUp() public {
         usdc = new MockERC20(6);
-        vault = new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC", address(this), type(uint256).max);
+        vault =
+            new SimpleVault(IERC20(address(usdc)), "Simple Vault USDC", "svUSDC", address(this), type(uint256).max, 0);
         address[4] memory users = [alice, bob, carol, early];
         for (uint256 i = 0; i < users.length; i++) {
             usdc.mint(users[i], START);
@@ -48,6 +46,14 @@ contract SimpleVaultTest is Test {
     function _deposit(address who, uint256 assets) internal returns (uint256 shares) {
         vm.prank(who);
         shares = vault.deposit(assets, who);
+    }
+
+    /// Exits through the v3 flow. The delay is 0 in this file, so the claim works at once.
+    function _exit(address who, uint256 shares) internal returns (uint256 assets) {
+        vm.startPrank(who);
+        assets = vault.requestRedeem(shares);
+        vault.claim(assets, who);
+        vm.stopPrank();
     }
 
     /// The scenario from the explanation: 1,000 assets backing 800 shares (1 share = 1.25 USDC).
@@ -78,29 +84,30 @@ contract SimpleVaultTest is Test {
 
     function test_RevertWhen_AssetIsTheZeroAddress() public {
         vm.expectRevert(SimpleVault.ZeroAddress.selector);
-        new SimpleVault(IERC20(address(0)), "V", "V", address(this), type(uint256).max);
+        new SimpleVault(IERC20(address(0)), "V", "V", address(this), type(uint256).max, 0);
     }
 
     function testFuzz_Decimals_FollowTheAsset(uint8 assetDecimals) public {
         MockERC20 token = new MockERC20(assetDecimals);
-        SimpleVault v = new SimpleVault(IERC20(address(token)), "V", "V", address(this), type(uint256).max);
+        SimpleVault v = new SimpleVault(IERC20(address(token)), "V", "V", address(this), type(uint256).max, 0);
         assertEq(v.decimals(), assetDecimals);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetHasNoCode() public {
-        SimpleVault v = new SimpleVault(IERC20(makeAddr("not a contract")), "V", "V", address(this), type(uint256).max);
+        SimpleVault v =
+            new SimpleVault(IERC20(makeAddr("not a contract")), "V", "V", address(this), type(uint256).max, 0);
         assertEq(v.decimals(), 18);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetHasNoDecimalsFunction() public {
         SimpleVault v =
-            new SimpleVault(IERC20(address(new NoDecimalsToken())), "V", "V", address(this), type(uint256).max);
+            new SimpleVault(IERC20(address(new NoDecimalsToken())), "V", "V", address(this), type(uint256).max, 0);
         assertEq(v.decimals(), 18);
     }
 
     function test_Decimals_FallBackTo18_WhenTheAssetsDecimalsDoNotFitInUint8() public {
         SimpleVault v =
-            new SimpleVault(IERC20(address(new HugeDecimalsToken())), "V", "V", address(this), type(uint256).max);
+            new SimpleVault(IERC20(address(new HugeDecimalsToken())), "V", "V", address(this), type(uint256).max, 0);
         assertEq(v.decimals(), 18);
     }
 
@@ -164,27 +171,20 @@ contract SimpleVaultTest is Test {
         assertEq(usdc.balanceOf(alice), START - 100);
     }
 
-    function test_Scenario_Withdraw100_Burns81() public {
+    function test_Scenario_PreviewWithdraw100_Burns81() public {
         _scenario();
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit Withdraw(early, early, early, 100, 81);
-        vm.prank(early);
-        uint256 shares = vault.withdraw(100, early, early);
-
-        assertEq(shares, 81);
-        assertEq(vault.balanceOf(early), 800 - 81);
-        assertEq(usdc.balanceOf(early), START - 800 + 100);
+        assertEq(vault.previewWithdraw(100), 81); // 80.02 shares, rounded up
     }
 
-    function test_Scenario_Redeem80_Pays99() public {
+    function test_Scenario_Request80Shares_Reserves99_ThenPays99() public {
         _scenario();
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit Withdraw(early, early, early, 99, 80);
         vm.prank(early);
-        uint256 assets = vault.redeem(80, early, early);
-
-        assertEq(assets, 99);
+        uint256 assets = vault.requestRedeem(80);
+        assertEq(assets, 99); // 99.98, rounded down
         assertEq(vault.balanceOf(early), 720);
+
+        vm.prank(early);
+        vault.claim(99, early);
         assertEq(usdc.balanceOf(early), START - 800 + 99);
     }
 
@@ -251,114 +251,30 @@ contract SimpleVaultTest is Test {
         assertEq(vault.maxMint(anyone), type(uint256).max);
     }
 
-    function test_MaxWithdrawAndMaxRedeem_FollowTheOwnersShares() public {
+    function testFuzz_MaxWithdrawAndMaxRedeem_AreAlwaysZero(address anyone) public {
         _scenario();
-        assertEq(vault.maxRedeem(early), 800);
-        assertEq(vault.maxWithdraw(early), 999); // 800 shares are worth 999.75 USDC, rounded down
-        assertEq(vault.maxRedeem(alice), 0);
-        assertEq(vault.maxWithdraw(alice), 0);
+        assertEq(vault.maxWithdraw(anyone), 0);
+        assertEq(vault.maxRedeem(anyone), 0);
+        assertEq(vault.maxWithdraw(early), 0); // even for someone holding shares
     }
 
-    function test_RevertWhen_Withdraw_MoreThanMax() public {
+    function test_RevertWhen_SyncWithdrawOrRedeem_AnyCallerAnyAmount() public {
         _scenario();
-        vm.prank(early);
-        vm.expectRevert(abi.encodeWithSelector(SimpleVault.Vault__ExceededMaxWithdraw.selector, early, 1_000, 999));
-        vault.withdraw(1_000, early, early);
+        vm.startPrank(early);
+        vm.expectRevert(SimpleVault.Vault__UseRequestRedeem.selector);
+        vault.withdraw(1, early, early);
+        vm.expectRevert(SimpleVault.Vault__UseRequestRedeem.selector);
+        vault.redeem(1, early, early);
+        vm.expectRevert(SimpleVault.Vault__UseRequestRedeem.selector);
+        vault.withdraw(0, early, early);
+        vm.stopPrank();
     }
 
-    function test_RevertWhen_Redeem_MoreThanMax() public {
-        _scenario();
-        vm.prank(early);
-        vm.expectRevert(abi.encodeWithSelector(SimpleVault.Vault__ExceededMaxRedeem.selector, early, 801, 800));
-        vault.redeem(801, early, early);
-    }
-
-    function test_Withdraw_TheWholeMax_LeavesTheOwnerWithNothing() public {
-        _deposit(alice, 1_000);
-        vm.prank(alice);
-        vault.withdraw(1_000, alice, alice);
+    function test_FullExit_ReturnsEverything() public {
+        uint256 shares = _deposit(alice, 1_000);
+        _exit(alice, shares);
         assertEq(vault.balanceOf(alice), 0);
         assertEq(usdc.balanceOf(alice), START);
-    }
-
-    // ------------------------------------------------------------------ withdraw and redeem: who may act
-
-    function test_Withdraw_ByTheOwner_NeedsNoAllowance() public {
-        _deposit(alice, 500);
-        vm.prank(alice);
-        vault.withdraw(100, alice, alice);
-        assertEq(vault.balanceOf(alice), 400);
-        assertEq(vault.allowance(alice, alice), 0);
-    }
-
-    function test_Redeem_ByTheOwner_NeedsNoAllowance() public {
-        _deposit(alice, 500);
-        vm.prank(alice);
-        vault.redeem(100, alice, alice);
-        assertEq(vault.balanceOf(alice), 400);
-    }
-
-    function test_Withdraw_ByAnApprovedOperator_SpendsTheAllowanceInShares() public {
-        _scenario();
-        vm.prank(early);
-        vault.approve(bob, 100);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit Withdraw(bob, carol, early, 100, 81);
-        vm.prank(bob);
-        vault.withdraw(100, carol, early);
-
-        assertEq(vault.allowance(early, bob), 19); // 100 shares approved, 81 burned
-        assertEq(vault.balanceOf(early), 719);
-        assertEq(usdc.balanceOf(carol), START + 100); // assets go to the receiver
-        assertEq(usdc.balanceOf(bob), START);
-    }
-
-    function test_Redeem_ByAnApprovedOperator_SpendsTheAllowance() public {
-        _scenario();
-        vm.prank(early);
-        vault.approve(bob, 100);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit Withdraw(bob, carol, early, 99, 80);
-        vm.prank(bob);
-        vault.redeem(80, carol, early);
-
-        assertEq(vault.allowance(early, bob), 20);
-        assertEq(usdc.balanceOf(carol), START + 99);
-    }
-
-    function test_Operator_WithUnlimitedAllowance_IsNotReduced() public {
-        _deposit(alice, 500);
-        vm.prank(alice);
-        vault.approve(bob, type(uint256).max);
-        vm.prank(bob);
-        vault.redeem(100, bob, alice);
-        assertEq(vault.allowance(alice, bob), type(uint256).max);
-    }
-
-    function test_RevertWhen_Withdraw_ByAStranger() public {
-        _deposit(alice, 500);
-        vm.prank(bob);
-        vm.expectRevert(_insufficientAllowance(bob, 0, 100));
-        vault.withdraw(100, bob, alice);
-    }
-
-    function test_RevertWhen_Redeem_ByAnOperatorBeyondTheAllowance() public {
-        _deposit(alice, 500);
-        vm.prank(alice);
-        vault.approve(bob, 99);
-        vm.prank(bob);
-        vm.expectRevert(_insufficientAllowance(bob, 99, 100));
-        vault.redeem(100, bob, alice);
-    }
-
-    function test_Withdraw_ToAnotherReceiver() public {
-        _deposit(alice, 500);
-        vm.prank(alice);
-        vault.withdraw(200, carol, alice);
-        assertEq(usdc.balanceOf(carol), START + 200);
-        assertEq(usdc.balanceOf(alice), START - 500);
     }
 
     // ------------------------------------------------------------------ the inflation (donation) attack
@@ -375,9 +291,9 @@ contract SimpleVaultTest is Test {
         uint256 victimShares = _deposit(alice, 5_000);
 
         assertEq(victimShares, 1);
-        assertEq(vault.maxWithdraw(alice), 3_334); // the victim loses 1,666
-        assertEq(vault.maxWithdraw(attacker), 3_334); // the attacker paid 5,001 and loses 1,667
-        assertLt(vault.maxWithdraw(attacker), 5_001);
+        assertEq(vault.convertToAssets(vault.balanceOf(alice)), 3_334); // the victim loses 1,666
+        assertEq(vault.convertToAssets(vault.balanceOf(attacker)), 3_334); // the attacker paid 5,001 and loses 1,667
+        assertLt(vault.convertToAssets(vault.balanceOf(attacker)), 5_001);
     }
 
     // ------------------------------------------------------------------ rounding always favours the vault
@@ -405,29 +321,26 @@ contract SimpleVaultTest is Test {
         assertGe(vault.previewMint(vault.previewWithdraw(x)), x);
     }
 
-    function testFuzz_DepositThenRedeem_NeverReturnsMoreThanPaid(uint256 deposited, uint256 yield_, uint256 x) public {
+    function testFuzz_DepositThenExit_NeverReturnsMoreThanPaid(uint256 deposited, uint256 yield_, uint256 x) public {
         _randomState(deposited, yield_);
         x = bound(x, 0, 1e12);
         uint256 before = usdc.balanceOf(alice);
 
-        vm.startPrank(alice);
+        vm.prank(alice);
         uint256 shares = vault.deposit(x, alice);
-        vault.redeem(shares, alice, alice);
-        vm.stopPrank();
+        if (vault.previewRedeem(shares) > 0) _exit(alice, shares);
 
         assertLe(usdc.balanceOf(alice), before);
     }
 
-    function testFuzz_MintThenWithdraw_CannotTakeMoreThanPaid(uint256 deposited, uint256 yield_, uint256 s) public {
+    function testFuzz_MintThenExit_CannotTakeMoreThanPaid(uint256 deposited, uint256 yield_, uint256 s) public {
         _randomState(deposited, yield_);
         s = bound(s, 0, 1e12);
 
-        vm.startPrank(alice);
+        vm.prank(alice);
         uint256 paid = vault.mint(s, alice);
-        uint256 max = vault.maxWithdraw(alice);
-        vm.stopPrank();
 
-        assertLe(max, paid);
+        assertLe(vault.previewRedeem(s), paid);
     }
 
     function testFuzz_ReturnValuesMatchThePreviews(uint256 deposited, uint256 yield_, uint256 x) public {
@@ -442,15 +355,12 @@ contract SimpleVaultTest is Test {
         vm.prank(alice);
         assertEq(vault.mint(x, alice), expectAssets);
 
-        uint256 w = vault.maxWithdraw(alice) / 2;
-        uint256 expectBurn = vault.previewWithdraw(w);
-        vm.prank(alice);
-        assertEq(vault.withdraw(w, alice, alice), expectBurn);
-
         uint256 r = vault.balanceOf(alice) / 2;
         uint256 expectOut = vault.previewRedeem(r);
-        vm.prank(alice);
-        assertEq(vault.redeem(r, alice, alice), expectOut);
+        if (expectOut > 0) {
+            vm.prank(alice);
+            assertEq(vault.requestRedeem(r), expectOut);
+        }
     }
 
     // ------------------------------------------------------------------ differential: same results as OpenZeppelin's vault
@@ -463,10 +373,6 @@ contract SimpleVaultTest is Test {
             mapped = ERC4626.ERC4626ExceededMaxDeposit.selector;
         } else if (sel == SimpleVault.Vault__ExceededMaxMint.selector) {
             mapped = ERC4626.ERC4626ExceededMaxMint.selector;
-        } else if (sel == SimpleVault.Vault__ExceededMaxWithdraw.selector) {
-            mapped = ERC4626.ERC4626ExceededMaxWithdraw.selector;
-        } else if (sel == SimpleVault.Vault__ExceededMaxRedeem.selector) {
-            mapped = ERC4626.ERC4626ExceededMaxRedeem.selector;
         }
         bytes memory out = err;
         assembly {
@@ -485,35 +391,25 @@ contract SimpleVaultTest is Test {
             ozAsset.mint(users[i], START);
             vm.startPrank(users[i]);
             ozAsset.approve(address(oz), type(uint256).max);
-            // bob may act for alice in both vaults
-            if (users[i] == alice) {
-                vault.approve(bob, 1e15);
-                oz.approve(bob, 1e15);
-            }
             vm.stopPrank();
         }
 
         for (uint256 i = 0; i < ops.length; i++) {
             address who = users[ops[i] % 3];
             uint256 x = uint256(amounts[i]) % 1e13;
-            uint256 op = (ops[i] / 3) % 7;
+            uint256 op = (ops[i] / 3) % 3;
 
-            if (op == 6) {
+            if (op == 2) {
                 usdc.mint(address(vault), x % 1e9); // same donation to both
                 ozAsset.mint(address(oz), x % 1e9);
             } else {
-                // op 4 and 5: bob withdraws / redeems on alice's behalf
-                address owner = op >= 4 ? alice : who;
-                address caller = op >= 4 ? bob : who;
-                bytes memory call;
-                if (op == 0) call = abi.encodeCall(IERC4626.deposit, (x, who));
-                else if (op == 1) call = abi.encodeCall(IERC4626.mint, (x, who));
-                else if (op == 2 || op == 4) call = abi.encodeCall(IERC4626.withdraw, (x, caller, owner));
-                else call = abi.encodeCall(IERC4626.redeem, (x, caller, owner));
+                // exits work differently by design in v3, so only the entry paths are compared
+                bytes memory call =
+                    op == 0 ? abi.encodeCall(IERC4626.deposit, (x, who)) : abi.encodeCall(IERC4626.mint, (x, who));
 
-                vm.prank(caller);
+                vm.prank(who);
                 (bool okMine, bytes memory outMine) = address(vault).call(call);
-                vm.prank(caller);
+                vm.prank(who);
                 (bool okOz, bytes memory outOz) = address(oz).call(call);
 
                 assertEq(okMine, okOz, "one vault reverted and the other did not");
@@ -526,9 +422,9 @@ contract SimpleVaultTest is Test {
             for (uint256 j = 0; j < users.length; j++) {
                 assertEq(vault.balanceOf(users[j]), oz.balanceOf(users[j]));
                 assertEq(usdc.balanceOf(users[j]), ozAsset.balanceOf(users[j]));
-                assertEq(vault.maxWithdraw(users[j]), oz.maxWithdraw(users[j]));
+                assertEq(vault.convertToAssets(vault.balanceOf(users[j])), oz.convertToAssets(oz.balanceOf(users[j])));
             }
-            assertEq(vault.allowance(alice, bob), oz.allowance(alice, bob));
+            assertEq(vault.previewRedeem(x), oz.previewRedeem(x));
             assertEq(vault.previewMint(x), oz.previewMint(x));
             assertEq(vault.previewWithdraw(x), oz.previewWithdraw(x));
         }
@@ -538,7 +434,7 @@ contract SimpleVaultTest is Test {
 
     function test_Order_AssetsArePulledInBeforeSharesAreMinted() public {
         SnoopingToken snoop = new SnoopingToken();
-        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max);
+        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max, 0);
         snoop.setVault(address(v));
         snoop.mint(alice, 1_000);
         vm.startPrank(alice);
@@ -550,14 +446,16 @@ contract SimpleVaultTest is Test {
 
     function test_Order_SharesAreBurnedBeforeAssetsArePaidOut() public {
         SnoopingToken snoop = new SnoopingToken();
-        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max);
+        SimpleVault v = new SimpleVault(IERC20(address(snoop)), "V", "V", address(this), type(uint256).max, 0);
         snoop.setVault(address(v));
         snoop.mint(alice, 1_000);
         vm.startPrank(alice);
         snoop.approve(address(v), type(uint256).max);
         v.deposit(1_000, alice);
-        v.withdraw(400, alice, alice);
+        v.requestRedeem(400);
+        v.claim(400, alice);
         vm.stopPrank();
         assertEq(snoop.supplyWhenPaidOut(), 600); // the 400 shares were already gone while the assets moved
+        assertEq(snoop.pendingWhenPaidOut(), 0); // and the request was already settled (no double claim)
     }
 }
