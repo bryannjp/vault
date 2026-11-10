@@ -13,28 +13,57 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
     uint256 public depositCap;
+    uint256 public dailyLimit;
+    uint256 public currentDay; // today’s day number
+    uint256 public claimedToday; // today’s usage
+    uint256 public totalPending; // all reserved, unclaimed assets
+    uint256 public immutable withdrawalDelay;
+
+    struct WithdrawalRequest {
+        uint256 assets;
+        uint256 claimableAt;
+    }
+    mapping(address => WithdrawalRequest) public requests;
+
+    uint256 public constant MAX_WITHDRAWAL_DELAY = 30 days;
 
     IERC20 private immutable i_asset;
     uint8 private immutable i_underlyingDecimals;
 
     event DepositCapChanged(uint256 oldCap, uint256 newCap);
+    event DailyLimitChanged(uint256 oldLimit, uint256 newLimit);
+    event WithdrawalRequested(address indexed owner, uint256 shares, uint256 assets, uint256 claimableAt);
+    event WithdrawalClaimed(address indexed owner, address indexed receiver, uint256 assets);
 
     error ZeroAddress();
     error Vault__ExceededMaxDeposit(address receiver, uint256 assets, uint256 maxDeposit);
     error Vault__ExceededMaxMint(address receiver, uint256 shares, uint256 maxMint);
-    error Vault__ExceededMaxWithdraw(address owner, uint256 assets, uint256 maxWithdraw);
-    error Vault__ExceededMaxRedeem(address owner, uint256 shares, uint256 maxRedeem);
     error Vault__RenounceDisabled();
+    error Vault__DelayTooLong(uint256 delay, uint256 max);
+    error Vault__ZeroAssets();
+    error Vault__RequestPending();
+    error Vault__NoRequest();
+    error Vault__NotClaimableYet(uint256 claimableAt);
+    error Vault__ExceedsRequest(uint256 assets, uint256 requested);
+    error Vault__DailyLimitExceeded(uint256 assets, uint256 remaining);
+    error Vault__UseRequestRedeem();
 
-    constructor(IERC20 asset_, string memory name, string memory symbol, address initialOwner, uint256 initialCap)
-        ERC20(name, symbol)
-        Ownable(initialOwner)
-    {
+    constructor(
+        IERC20 asset_,
+        string memory name,
+        string memory symbol,
+        address initialOwner,
+        uint256 initialCap,
+        uint256 delay
+    ) ERC20(name, symbol) Ownable(initialOwner) {
         if (address(asset_) == address(0)) revert ZeroAddress();
+        if (delay > MAX_WITHDRAWAL_DELAY) revert Vault__DelayTooLong(delay, MAX_WITHDRAWAL_DELAY);
         i_asset = asset_;
         (bool success, uint8 assetDecimals) = SafeERC20.tryGetDecimals(asset_);
         i_underlyingDecimals = success ? assetDecimals : 18;
         depositCap = initialCap;
+        withdrawalDelay = delay;
+        dailyLimit = type(uint256).max;
         emit DepositCapChanged(0, initialCap);
     }
 
@@ -46,6 +75,12 @@ contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
         uint256 oldCap = depositCap;
         depositCap = newCap;
         emit DepositCapChanged(oldCap, newCap);
+    }
+
+    function setDailyLimit(uint256 newLimit) external onlyOwner {
+        uint256 oldLimit = dailyLimit;
+        dailyLimit = newLimit;
+        emit DailyLimitChanged(oldLimit, newLimit);
     }
 
     function pause() external onlyOwner {
@@ -61,16 +96,8 @@ contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
     }
 
     function totalAssets() public view returns (uint256 totalManagedAssets) {
-        return i_asset.balanceOf(address(this));
+        return i_asset.balanceOf(address(this)) - totalPending;
     }
-
-    // Rounding: always favour the vault
-    // Function	                            Computes	            Rounds
-    // previewDeposit / deposit	            shares you get	        down
-    // previewMint / mint	                assets you pay	        up
-    // previewWithdraw / withdraw	        shares you burn	        up
-    // previewRedeem / redeem	            assets you get	        down
-    // convertToShares / convertToAssets	the average rate	    always down (spec rule)
 
     function convertToShares(uint256 assets) external view returns (uint256 shares) {
         return _toShares(assets, Math.Rounding.Floor);
@@ -96,16 +123,10 @@ contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
         return _toAssets(shares, Math.Rounding.Floor);
     }
 
-    function maxDeposit(
-        address /* receiver */
-    )
-        public
-        view
-        returns (uint256 maxAssets)
-    {
+    function maxDeposit(address) public view returns (uint256 maxAssets) {
         if (paused()) return 0;
         if (depositCap == type(uint256).max) return type(uint256).max;
-        if (totalAssets() >= depositCap) return 0;
+        if (totalAssets() > depositCap) return 0;
         return depositCap - totalAssets();
     }
 
@@ -115,14 +136,12 @@ contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
         return _toShares(room, Math.Rounding.Floor);
     }
 
-    function maxWithdraw(address owner) public view returns (uint256 maxAssets) {
-        if (paused()) return 0;
-        return _toAssets(balanceOf(owner), Math.Rounding.Floor);
+    function maxWithdraw(address) public pure returns (uint256 maxAssets) {
+        return 0;
     }
 
-    function maxRedeem(address owner) public view returns (uint256 maxShares) {
-        if (paused()) return 0;
-        return balanceOf(owner);
+    function maxRedeem(address) public pure returns (uint256 maxShares) {
+        return 0;
     }
 
     function deposit(uint256 assets, address receiver) external whenNotPaused returns (uint256 shares) {
@@ -143,24 +162,51 @@ contract SimpleVault is ERC20, IERC4626, Ownable2Step, Pausable {
         emit Deposit(msg.sender, receiver, assets, shares);
     }
 
-    function withdraw(uint256 assets, address receiver, address owner) external whenNotPaused returns (uint256 shares) {
-        uint256 _maxWithdraw = maxWithdraw(owner);
-        if (assets > _maxWithdraw) revert Vault__ExceededMaxWithdraw(owner, assets, _maxWithdraw);
-        shares = previewWithdraw(assets);
-        if (msg.sender != owner) _spendAllowance(owner, msg.sender, shares);
-        _burn(owner, shares);
-        SafeERC20.safeTransfer(i_asset, receiver, assets);
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+    function withdraw(uint256, address, address) external pure returns (uint256) {
+        revert Vault__UseRequestRedeem();
     }
 
-    function redeem(uint256 shares, address receiver, address owner) external whenNotPaused returns (uint256 assets) {
-        uint256 _maxRedeem = maxRedeem(owner);
-        if (shares > _maxRedeem) revert Vault__ExceededMaxRedeem(owner, shares, _maxRedeem);
+    function redeem(uint256, address, address) external pure returns (uint256) {
+        revert Vault__UseRequestRedeem();
+    }
+
+    function requestRedeem(uint256 shares) external whenNotPaused returns (uint256 assets) {
+        if (requests[msg.sender].assets != 0) revert Vault__RequestPending();
         assets = previewRedeem(shares);
-        if (msg.sender != owner) _spendAllowance(owner, msg.sender, shares);
-        _burn(owner, shares);
+        if (assets == 0) revert Vault__ZeroAssets();
+        _burn(msg.sender, shares);
+        totalPending += assets;
+        uint256 claimableAt = block.timestamp + withdrawalDelay;
+        requests[msg.sender] = WithdrawalRequest(assets, claimableAt);
+        emit WithdrawalRequested(msg.sender, shares, assets, claimableAt);
+    }
+
+    function claim(uint256 assets, address receiver) external whenNotPaused {
+        WithdrawalRequest storage request = requests[msg.sender];
+        if (request.assets == 0) revert Vault__NoRequest();
+        if (block.timestamp < request.claimableAt) revert Vault__NotClaimableYet(request.claimableAt);
+        if (assets == 0) revert Vault__ZeroAssets();
+        if (assets > request.assets) revert Vault__ExceedsRequest(assets, request.assets);
+        uint256 today = block.timestamp / 1 days;
+        if (today != currentDay) {
+            currentDay = today;
+            claimedToday = 0;
+        }
+        uint256 remaining = remainingToday();
+        if (assets > remaining) revert Vault__DailyLimitExceeded(assets, remaining);
+
+        claimedToday += assets;
+        request.assets -= assets;
+        totalPending -= assets;
         SafeERC20.safeTransfer(i_asset, receiver, assets);
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+        emit WithdrawalClaimed(msg.sender, receiver, assets);
+    }
+
+    function remainingToday() public view returns (uint256) {
+        uint256 today = block.timestamp / 1 days;
+        uint256 used = today == currentDay ? claimedToday : 0;
+        if (used > dailyLimit) return 0;
+        return dailyLimit - used;
     }
 
     // Override it to always revert. If the owner renounced while the vault was paused,
