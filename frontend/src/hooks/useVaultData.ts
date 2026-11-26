@@ -19,6 +19,7 @@ export type VaultData = {
   remainingToday: bigint;
   withdrawalDelay: number; // seconds
   owner: string;
+  blockTimestamp: number; // time of the latest block (the chain's "now")
 };
 
 export type UserData = {
@@ -37,7 +38,7 @@ async function fetchVault(): Promise<VaultData> {
   // All calls in parallel: one round trip instead of twelve.
   const [
     assetSymbol, shareSymbol, paused, totalAssets, totalSupply, sharePrice,
-    depositCap, maxDeposit, totalPending, dailyLimit, remainingToday, withdrawalDelay, owner,
+    depositCap, maxDeposit, totalPending, dailyLimit, remainingToday, withdrawalDelay, owner, block,
   ] = await Promise.all([
     tokenRead.symbol(),
     vaultRead.symbol(),
@@ -52,6 +53,7 @@ async function fetchVault(): Promise<VaultData> {
     vaultRead.remainingToday(),
     vaultRead.withdrawalDelay(),
     vaultRead.owner(),
+    readProvider.getBlock("latest"),
   ]);
 
   return {
@@ -59,6 +61,7 @@ async function fetchVault(): Promise<VaultData> {
     depositCap, maxDeposit, totalPending, dailyLimit, remainingToday,
     withdrawalDelay: Number(withdrawalDelay),
     owner,
+    blockTimestamp: block?.timestamp ?? 0,
   };
 }
 

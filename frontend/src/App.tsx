@@ -5,6 +5,8 @@ import { VaultStats } from "./components/VaultStats";
 import { MyPosition } from "./components/MyPosition";
 import { Faucet } from "./components/Faucet";
 import { Deposit } from "./components/Deposit";
+import { RequestWithdrawal } from "./components/RequestWithdrawal";
+import { Claim } from "./components/Claim";
 
 export default function App() {
   const wallet = useWallet();
@@ -26,6 +28,10 @@ export default function App() {
             <>
               <Faucet vault={vault} account={wallet.account} getSigner={wallet.getSigner} />
               <Deposit vault={vault} user={user} account={wallet.account} getSigner={wallet.getSigner} />
+              <RequestWithdrawal vault={vault} user={user} getSigner={wallet.getSigner} />
+              {user.pendingAssets > 0n && (
+                <Claim vault={vault} user={user} account={wallet.account} getSigner={wallet.getSigner} />
+              )}
             </>
           )}
         </>
