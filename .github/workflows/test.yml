@@ -33,3 +33,80 @@ jobs:
 
       - name: Run Forge tests
         run: forge test -vvv
+
+      # The frontend uses the ABIs committed in frontend/src/abi. If a contract changed
+      # and nobody re-exported them, the app would call functions that don't exist.
+      - name: Check the frontend's ABIs are up to date
+        run: |
+          ./script/export-abi.sh
+          git diff --exit-code frontend/src/abi || {
+            echo "::error::frontend/src/abi is out of date. Run ./script/export-abi.sh and commit the result."
+            exit 1
+          }
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm # reuses downloaded packages between runs
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci # exact versions from package-lock.json
+
+      - name: Check dependencies for known vulnerabilities
+        run: npm audit --omit=dev --audit-level=high # only the packages shipped to users
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check and build
+        run: npm run build # tsc -b && vite build
+
+  docker:
+    name: Docker stack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive # the deploy image needs lib/
+
+      - name: Build images
+        run: docker compose build
+
+      # Start everything and check it really works: the vault has code on the chain
+      # and the website is served.
+      - name: Smoke test
+        run: |
+          docker compose up -d
+          for _ in $(seq 60); do curl -sf http://localhost:8080 > /dev/null && break; sleep 2; done
+          curl -sf http://localhost:8080 | grep -q '<div id="root">'
+          code=$(curl -sf -X POST -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512","latest"]}' \
+            http://localhost:8545 | jq -r .result)
+          # Real contract code is "0x" followed by bytecode; "0x" (no contract) or "" (no answer) fail.
+          [[ "$code" == 0x?* ]] || { echo "::error::No contract at the vault address"; exit 1; }
+          echo "Frontend is up and the vault is deployed."
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v
