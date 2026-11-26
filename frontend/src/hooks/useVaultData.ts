@@ -19,7 +19,8 @@ export type VaultData = {
   remainingToday: bigint;
   withdrawalDelay: number; // seconds
   owner: string;
-  blockTimestamp: number; // time of the latest block (the chain's "now")
+  blockTimestamp: number; // time of the latest block
+  clockOffset: number; // seconds the chain's clock is ahead of this computer's clock (0 if not ahead)
 };
 
 export type UserData = {
@@ -62,6 +63,8 @@ async function fetchVault(): Promise<VaultData> {
     withdrawalDelay: Number(withdrawalDelay),
     owner,
     blockTimestamp: block?.timestamp ?? 0,
+    // Data reloads right after each new block, so that block's time is close to the chain's "now".
+    clockOffset: Math.max(0, (block?.timestamp ?? 0) - Math.floor(Date.now() / 1000)),
   };
 }
 

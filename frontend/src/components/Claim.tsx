@@ -19,9 +19,9 @@ export function Claim({ vault, user, account, getSigner }: Props) {
   const { run, busy, status, error } = useTx(assets);
   const [input, setInput] = useState("");
 
-  // The contract checks block.timestamp, so use the chain's time if it's ahead of the computer's clock
-  // (it is on Anvil after skipping time forward).
-  const now = Math.max(useNow(), vault.blockTimestamp);
+  // The contract checks block.timestamp, so count down in chain time: the computer's ticking clock
+  // plus how far the chain is ahead of it (on Anvil, after skipping time forward).
+  const now = useNow() + vault.clockOffset;
   const secondsLeft = user.claimableAt - now;
 
   // You can claim your whole request, unless the vault's daily limit has less room left today.

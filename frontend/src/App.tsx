@@ -9,6 +9,8 @@ import { RequestWithdrawal } from "./components/RequestWithdrawal";
 import { Claim } from "./components/Claim";
 import { OwnerPanel } from "./components/OwnerPanel";
 import { ActivityFeed } from "./components/ActivityFeed";
+import { DevTools } from "./components/DevTools";
+import { CHAIN_ID } from "./lib/config";
 
 export default function App() {
   const wallet = useWallet();
@@ -41,6 +43,7 @@ export default function App() {
             </>
           )}
           <ActivityFeed vault={vault} />
+          {CHAIN_ID === 31337 && <DevTools vault={vault} />}
         </>
       )}
     </main>
