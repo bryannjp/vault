@@ -3,6 +3,7 @@ import { useVaultData } from "./hooks/useVaultData";
 import { ConnectWallet } from "./components/ConnectWallet";
 import { VaultStats } from "./components/VaultStats";
 import { MyPosition } from "./components/MyPosition";
+import { Faucet } from "./components/Faucet";
 
 export default function App() {
   const wallet = useWallet();
@@ -19,6 +20,10 @@ export default function App() {
         <>
           <VaultStats vault={vault} />
           {user && <MyPosition vault={vault} user={user} />}
+          {/* Transactions only when a wallet is connected to the right chain */}
+          {wallet.account && wallet.isCorrectChain && (
+            <Faucet vault={vault} account={wallet.account} getSigner={wallet.getSigner} />
+          )}
         </>
       )}
     </main>
