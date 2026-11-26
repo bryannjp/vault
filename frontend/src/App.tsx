@@ -4,6 +4,7 @@ import { ConnectWallet } from "./components/ConnectWallet";
 import { VaultStats } from "./components/VaultStats";
 import { MyPosition } from "./components/MyPosition";
 import { Faucet } from "./components/Faucet";
+import { Deposit } from "./components/Deposit";
 
 export default function App() {
   const wallet = useWallet();
@@ -21,8 +22,11 @@ export default function App() {
           <VaultStats vault={vault} />
           {user && <MyPosition vault={vault} user={user} />}
           {/* Transactions only when a wallet is connected to the right chain */}
-          {wallet.account && wallet.isCorrectChain && (
-            <Faucet vault={vault} account={wallet.account} getSigner={wallet.getSigner} />
+          {wallet.account && wallet.isCorrectChain && user && (
+            <>
+              <Faucet vault={vault} account={wallet.account} getSigner={wallet.getSigner} />
+              <Deposit vault={vault} user={user} account={wallet.account} getSigner={wallet.getSigner} />
+            </>
           )}
         </>
       )}

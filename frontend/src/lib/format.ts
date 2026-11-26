@@ -1,4 +1,4 @@
-import { formatUnits, MaxUint256 } from "ethers";
+import { formatUnits, MaxUint256, parseUnits } from "ethers";
 
 // (1234567890n, 6, "mUSD") -> "1,234.5678 mUSD"
 // type(uint256).max is the contract's way of saying "no limit".
@@ -25,4 +25,16 @@ export function formatDuration(totalSeconds: number): string {
 
 export function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+// What the user typed -> raw amount. "12.5" with 6 decimals -> 12500000n.
+// Returns null for empty or invalid input (letters, "-1", more decimals than the token has).
+export function parseAmount(input: string, decimals: number): bigint | null {
+  const text = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
+  try {
+    return parseUnits(text, decimals);
+  } catch {
+    return null;
+  }
 }

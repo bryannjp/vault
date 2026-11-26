@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { readProvider, tokenRead, vaultRead } from "../lib/contracts";
+import { VAULT_ADDRESS } from "../lib/config";
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -22,6 +23,7 @@ export type VaultData = {
 
 export type UserData = {
   tokenBalance: bigint;
+  allowance: bigint; // how many tokens the vault may pull from the user (set by approve)
   shares: bigint;
   sharesValue: bigint; // what the shares are worth in assets right now
   pendingAssets: bigint; // requested but not yet claimed
@@ -61,8 +63,9 @@ async function fetchVault(): Promise<VaultData> {
 }
 
 async function fetchUser(account: string): Promise<UserData> {
-  const [tokenBalance, shares, request] = await Promise.all([
+  const [tokenBalance, allowance, shares, request] = await Promise.all([
     tokenRead.balanceOf(account),
+    tokenRead.allowance(account, VAULT_ADDRESS),
     vaultRead.balanceOf(account),
     vaultRead.requests(account), // public mapping getter -> (assets, claimableAt)
   ]);
@@ -70,6 +73,7 @@ async function fetchUser(account: string): Promise<UserData> {
 
   return {
     tokenBalance,
+    allowance,
     shares,
     sharesValue,
     pendingAssets: request.assets,
