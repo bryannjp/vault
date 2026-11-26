@@ -1,0 +1,8 @@
+.git
+.anvil
+out
+cache
+broadcast
+frontend
+.env
+.env.*
