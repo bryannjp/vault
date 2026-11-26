@@ -37,8 +37,6 @@ v3 adds:
 ## Frontend
 A React + TypeScript app (Vite) to use the vault from the browser.
 
-![Screenshot](.github/screenshot.png)
-
 - Connect MetaMask (EIP-1193), detect the wrong network and switch to the right one
 - Vault stats and your position, refreshed after every new block
 - Faucet, approve & deposit, request withdrawal, claim with a countdown and daily-limit handling
