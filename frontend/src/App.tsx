@@ -8,6 +8,7 @@ import { Deposit } from "./components/Deposit";
 import { RequestWithdrawal } from "./components/RequestWithdrawal";
 import { Claim } from "./components/Claim";
 import { OwnerPanel } from "./components/OwnerPanel";
+import { ActivityFeed } from "./components/ActivityFeed";
 
 export default function App() {
   const wallet = useWallet();
@@ -39,6 +40,7 @@ export default function App() {
               {isOwner && <OwnerPanel vault={vault} getSigner={wallet.getSigner} />}
             </>
           )}
+          <ActivityFeed vault={vault} />
         </>
       )}
     </main>
