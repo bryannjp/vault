@@ -7,10 +7,14 @@ import { Faucet } from "./components/Faucet";
 import { Deposit } from "./components/Deposit";
 import { RequestWithdrawal } from "./components/RequestWithdrawal";
 import { Claim } from "./components/Claim";
+import { OwnerPanel } from "./components/OwnerPanel";
 
 export default function App() {
   const wallet = useWallet();
   const { vault, user, error } = useVaultData(wallet.account);
+  
+  // MetaMask gives lowercase addresses, the contract returns checksummed (mixed-case) ones: compare in lowercase.
+  const isOwner = vault !== null && wallet.account?.toLowerCase() === vault.owner.toLowerCase();
 
   return (
     <main>
@@ -32,6 +36,7 @@ export default function App() {
               {user.pendingAssets > 0n && (
                 <Claim vault={vault} user={user} account={wallet.account} getSigner={wallet.getSigner} />
               )}
+              {isOwner && <OwnerPanel vault={vault} getSigner={wallet.getSigner} />}
             </>
           )}
         </>
